@@ -1,0 +1,41 @@
+[2006/04/10 20:32:25]
+
+Jak siê prosto domy¶liæ mo¿na, ten modu³ chakóje czat onet'u. Kilka
+rzeczy ró¿ni±cych od zwyk³ego IRCa:
+
+ * komenda /LIST, opis po wydaniu,
+ * serwis "inv", s³u¿±cy odrzucaniu/ignorowaniu zaproszeñ, opis j/w,
+ * komenda /WHOIS, gdzie do realname dopisywane s± pierwsze
+   trzy oktety ip wyci±gane z hostów (@A-******.local.onet),
+ * trochê oszukany (zwyk³e /QUERY) serwis "onet-service" s³u¿±cy do
+   zmieniania chanmodes i jego polecenia opisane po dowolnym (+-boh)
+   zmienieniu z u¿yciem tradycyjnego /MODE,
+ * co do modów, to onetowskie +wo zmieniam na u¿ywalne +oh. +W
+   to kamera, +M - moderator, +S - pomocnik moderatora (ka¶
+   g³upota),
+ * kana³y moderowane (#rozmowy, #itvn i mo¿e co¶ jeszcze),
+   gdzie wiadomo¶ci wysy³a moderator, a wy¶wietlane s± jako NOTICE
+   od niego,
+ * brak komendy /WHO,
+ * /QUIT z reasonem zaczynaj±cym siê od & zabija chatproxy
+   (& nie jest wysy³ane do serwera),
+ * kana³y +nick to privy.
+
+Jak sobie co¶ przypomnê, to dopiszê.
+
+Proces instalacji dok³adnie opisany w INSTALL.
+
+Za³. 1
+Lista znalezionych komend onet-service:
+
+lsfriends
+addfriend <nick>
+delfriend <nick>
+ignore [[-]<nick>]
+invite <chan> [-]<nick>
+whoiswho <chan>
+mkoper <chan> [-]<nick>
+mkowner <chan> [-]<nick>
+uprefs <note>
+ban <chan> [-]<nick>
+chprops <chan>[ <new-opts>]

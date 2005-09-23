@@ -1,0 +1,61 @@
+[Sat Jan 28 20:08:53 CET 2006]
+
+Kochani.
+
+Mam serdecznie do¶æ ci±g³ego, rêcznego t³umaczenia, jak to zainstalowaæ i 
+uruchomiæ. Dlatego postanowi³em ten w³a¶nie plik wyklikaæ. Otó¿:
+
+1) proszê zassaæ "chatproxy.tar.bz2", "chatproxy-onetczat.tar.bz2" i 
+   "ytils.tar.bz2".
+
+2) Proszê rozpakowaæ "ytils.tar.bz2", i wpisaæ "make", a nastêpnie "make 
+   install" w katalogu, do którego siê rozpakowa³o. W przypadku nie 
+   posiadania uprawnieñ do zapisu do katalogu /usr/lib, prosze poprosiæ o 
+   wpisanie "make install" odpowiednie organy w³adzy.
+
+2) Proszê rozpakowaæ chatproxy.tar.bz2, i wpisaæ "make" w katalogu, do 
+   którego siê rozpakowa³o.
+
+4) Proszê rozpakowaæ "chatproxy-onetczat.tar.bz2", i wpisaæ "make" w 
+   katalogu, do którego siê rozpakowa³o.
+
+5) Proszê wej¶æ do katalogu "chatproxy-onetczat/" i wydaæ nastêpuj±ce 
+   polecenie:
+
+      <chatproxy> <port> ./onetczat.so ./onetczat.pl
+
+   gdzie <chatproxy> jest dok³adn± ¶cie¿k± do wcze¶niej skompilowanego 
+   chatproxy (znajduj±cego siê najprawdopodobniej w katalogu 
+   "chatproxy/obj/"),
+
+   a <port> - portem, na który chcemy siê ³±czyæ z klienta IRC.
+
+6) Powinno pojawiæ siê (je¶li tego nie robi to to jest TWOJA WINA!) co¶ 
+   takiego:
+
+     yodar@router ~/src/chatproxy-onetczat $ ../chatproxy/obj/chatproxy 54321 ./onetczat.so ./onetczat.pl
+     Daemonize [y/n]: y
+     OnetUID: stefan_sztompke
+     OnetPassword (empty for tmp-uid):
+
+   Proszê wype³niæ w zale¿no¶ci od upodobañ OnetUID (nick) oraz - opcjonalnie 
+   - OnetPassword, je¶li jest to sta³y nick, chroniony has³em. Za³o¿yæ takowy 
+   mo¿na w serwisie "http://www.czat.onet.pl/". Co za¶ siê tyczy "Daemonize", 
+   w przypadku nie wybrania, na stdout bêdzie wypisywana konwersacja ircd z 
+   klientem.
+
+7) Po intuicyjnym enterze, proszê wpisaæ w kliencie IRC
+
+      /connect <host> <port>
+
+   gdzie <port> jest portem uprzednio podanym przy uruchamianiu chatproxy, a 
+   <host> hostem, na którym owo chatproxy uruchomili¶my. Je¶li nie wiesz o co 
+   chodzi, wpisz "localhost".
+
+8) Przed zadaniem mi pytania przeczytaj README.
+
+Dziêkujê.
+
+--
+greetings,   | www.yodar.apcoh.org
+yodar        | yodar@apcoh.org
