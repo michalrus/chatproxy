@@ -1,0 +1,49 @@
+#
+# chatproxy2 config.cnf file
+#
+# SYNTAX:
+#   Threads  number of asynchronous threads
+#   Port     port-to-listen-on
+#   Users    path/to/users.cnf  (relative to executable)
+#   Access   path/to/access.cnf (relative to executable)
+#   ErrLog   path/to/error.log  (relative to executable)
+#   TokenDir path/to/token/directory/ (relative to executable)
+#   TokenLoc where-to-direct-the-user-to-read-his-token
+#
+# -------------------------
+#
+# APPENDIX:
+#
+#   chatproxy2 users.cnf file
+#
+#   SYNTAX:
+#     user    password    max_sessions    adm
+#
+#   user, password - local credentials
+#   max_sessions - maximum number of simultaneous connections
+#   adm - boolean [01], defines user's ability to admin the deamon
+#
+# -------------------------
+#
+# APPENDIX:
+#
+#   chatproxy2 access.cnf file
+#
+#   SYNTAX:
+#     type    mask
+#
+#   type - deny / allow
+#   mask - host mask, e.g.
+#
+#    ~somebody@PL:host.pl
+#    with-identd@US:*
+#    *@???:*
+#
+
+Threads	 30
+Port	 9870
+Users    users.cnf
+Access   access.cnf
+ErrLog   error.log
+TokenDir ../../chatproxy/token
+TokenLoc http://router.kom.pl/token/
