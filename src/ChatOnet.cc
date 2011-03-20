@@ -1,152 +1,213 @@
+/**
+ * chatproxy3 v3.0
+ * Copyright (C) 2011  Michal Rus
+ * http://michalrus.com/code/chatproxy3/
+ *
+ * ChatOnet.h -- represents OnetCzat (http://czat.onet.pl) server.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include "ChatOnet.h"
+#include "Session.h"
+#include "Config.h"
 
-#include <sstream>
-#include <algorithm>
-
-#include <boost/regex.hpp>
-#include <boost/thread.hpp>
-#include <boost/shared_ptr.hpp>
+#include <boost/bind.hpp>
 #include <boost/lexical_cast.hpp>
-#include <boost/asio.hpp>
-#include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/case_conv.hpp>
+#include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/algorithm/string/split.hpp>
-#include <boost/bind.hpp>
 
-#include "EException.h"
-#include "Session.h"
-#include "Http.h"
-#include "Tcp.h"
-
-// 16:14:55 [OnetJodua] -!- MODERATE jodua ~deem #Admin cf1f35bc54abcd05f :co¶ innego.
-
-ChatOnet::ChatOnet (Session* session)
+ChatOnet::ChatOnet (Session& session)
 	: Chat(session),
-	  reModC_("%C[0-9a-f]+%"), reModF_("%F[0-9a-z:]+%"), reModI_("%I([0-9A-Za-z_]+)%"),
-	  sentBl_(0),
-	  tcp_(io_service_, boost::bind(&ChatOnet::handle_read, this), boost::bind(&ChatOnet::handle_end, this), boost::bind(&ChatOnet::handle_connect, this), "onet")
+	  tcp_(session.io_service_,
+			boost::bind(&ChatOnet::handle_read, this),
+			boost::bind(&ChatOnet::handle_end, this, _1),
+			boost::bind(&ChatOnet::handle_connect, this)),
+	  sent_bl_notice_(4),
+	  re_mod_c_("%C([0-9a-f]*)%"), re_mod_f_("%F[0-9a-z:]+%"), re_mod_i_("%I([0-9A-Za-z_]+)%"),
+	  re_mod_io_("(\\s|^)//([0-9A-Za-z_]+)(\\s|$)"),
+	  re_mod_ci_("\003(\\d?\\d?)"),
+	  channel_("\x94\xd4\xd9\xd2\xe5\xe1\xe3\xe0\xe9\xea"),
+	  rm_mod_c_(session.cnf_.get<std::string>("onet_colors") == "no"),
+	  tr_mod_c_(!rm_mod_c_ && session.cnf_.get<std::string>("onet_colors") == "mirc"),
+	  rm_mod_f_(session.cnf_.get<std::string>("onet_fonts") == "no"),
+	  tr_mod_i_(session.cnf_.get<std::string>("onet_emots") != "no")
 {
-}
+	Session::brot(channel_, -113);
 
-ChatOnet::~ChatOnet ()
-{
-	tcp_.close();
+	typedef boost::bimap<std::string, unsigned int>::value_type v;
+	colors_.insert(v("959595", 14));
+	colors_.insert(v("990033", 5));
+	colors_.insert(v("c86c00", 7));
+	colors_.insert(v("623c00", 5));
+	colors_.insert(v("ce00ff", 13));
+	colors_.insert(v("e40f0f", 4));
+	colors_.insert(v("3030ce", 12));
+	colors_.insert(v("008100", 3));
+	colors_.insert(v("1a866e", 10));
+	colors_.insert(v("006699", 11));
+	colors_.insert(v("8800ab", 6));
+	colors_.insert(v("0f2ab1", 2));
+	colors_.insert(v("ff6500", 7));
+	colors_.insert(v("ff0000", 4));
+	colors_.insert(v("000000", 0));
+	colors_.insert(v("", 0));
 }
 
 void ChatOnet::init()
 {
-	sendInfo("-!- ");
-	sendInfo("-!- Getting UO key ...");
+	notice("");
+	notice("Getting UO key...");
 
-	int r;
-	if ((r = getUoKey())) {
-		sendInfo("-!-   ... failed (" + boost::lexical_cast<std::string>(r) + ").");
-		end();
-		return;
-	}
-
-	sendInfo("-!-   ... " + uoKey_);
-	sendInfo("-!-   ... " + nick_);
-	sendInfo("-!- ");
-	sendInfo("-!- Connecting ...");
-	sendInfo("-!- ");
-
-	tcp_.timeout(10);
-	tcp_.connect("czat-app.onet.pl", 5015);
+	http_.async_get("http://secure.onet.pl/_s/kropka/1?DV=secure",
+		boost::bind(&ChatOnet::http_handler, this, 0, _1, _2, shared_from_this()));
 }
 
 void ChatOnet::process(std::vector<std::string>& im)
 {
-	if (!im.size())
-		return;
-
-	boost::to_upper(im[0]);
-
+	/* repair "synced to #[chan] in oo sec" =) */
 	if (im.size() == 2 && im[0] == "MODE" && (im[1][0] == '#' || im[1][0] == '+')) {
-		sendRaw(":chatproxy2 324 " + nick_ + " " + im[1] + " +\r\n");
+		session_.tcp_.write(":chatproxy3 324 " + session_.chat_nick_ + " " + im[1] + " +\r\n");
 		return;
 	}
 	else if (im.size() == 2 && im[0] == "WHO" && (im[1][0] == '#' || im[1][0] == '+')) {
-		sendRaw(":chatproxy2 315 " + nick_ + " " + im[1] + " :End of WHO list.\r\n");
+		session_.tcp_.write(":chatproxy3 315 " + session_.chat_nick_ + " " + im[1] + " :End of WHO list.\r\n");
 		return;
 	}
 	else if (im.size() == 3 && im[0] == "MODE" && (im[1][0] == '#' || im[1][0] == '+') && im[2] == "b") {
-		sendRaw(":chatproxy2 368 " + nick_ + " " + im[1] + " :End of Channel Ban List\r\n");
+		session_.tcp_.write(":chatproxy3 368 " + session_.chat_nick_ + " " + im[1] + " :End of Channel Ban List\r\n");
 		return;
 	}
 
+	std::vector<std::string> afterwards;
+
+	/* privs */
 	if (im.size() >= 2 && im[1][0] == '+')
 		im[1][0] = '^';
 
 	if (im[0] == "MODE" || im[0] == "WHO" || im[0] == "NICK" || im[0] == "PROTOCTL") {
-		if (!sentBl_)
-			sendInfo("MODE/WHO/NICK/PROTOCTL commands have been disabled. You won't be notified again.");
-		sentBl_ = 1;
+		if (sent_bl_notice_) {
+			notice("");
+			notice("MODE/WHO/NICK/PROTOCTL commands have been disabled.");
+			sent_bl_notice_--;
+			if (sent_bl_notice_)
+				notice("You will be notified "
+					+ boost::lexical_cast<std::string>(sent_bl_notice_)
+					+ " more time" + (sent_bl_notice_ == 1 ? "" : "s") + ".");
+			else
+				notice("You won't be notified again.");
+			notice("");
+		}
 		return;
 	}
 
 	if (im[0] == "LIST")
 		im[0] = "SLIST";
 	else if (im.size() >= 3 && im[0] == "MODERNOTICE")
-		sendRaw(":" + nick_ + "!fake@chatproxy2 NOTICE " + im[1] + " :" + im[2] + "\r\n");
+		session_.tcp_.write(":" + session_.chat_nick_ + "!fake@chatproxy3 NOTICE " + im[1] + " :" + im[2] + "\r\n");
 	else if (im.size() >= 5 && im[0] == "MODERMSG")
-		sendRaw(":\00314" + nick_ + "\003\002:\002" + im[1] + "!fake@chatproxy2 PRIVMSG "
+		session_.tcp_.write(":\00314" + session_.chat_nick_ + "\003\002:\002" + im[1] + "!fake@chatproxy3 PRIVMSG "
 			+ im[3] + " :" + im[4] + "\r\n");
 	else if (im[0] == "QUIT") {
 		if (im.size() > 1)
-			im[1] += "\017 (\002chatproxy2\002)";
+			im[1] += Session::signature_app_;
 		else
-			im.push_back("(\002chatproxy2\002)");
+			im.push_back(Session::signature_onl_);
+	}
+	else if (im[0] == "PART") {
+		if (im[1].find(channel_) != std::string::npos)
+			/* make "/part $channel_" act as "/cycle" */
+			afterwards.push_back("JOIN " + channel_ + "\r\n");
+
+		if (im.size() > 2)
+			im[2] += Session::signature_app_;
+		else
+			im.push_back(Session::signature_onl_);
+	}
+	else if (im[0] == "INVITE" && im.size() >= 3 && im[2][0] == '+')
+		im[2][0] = '^';
+
+	if (tr_mod_i_) {
+		/* //foobar -> %Ifoobar% */
+		size_t last = im.size() - 1;
+		im[last] = boost::regex_replace(im[last], re_mod_io_, "$1%I$2%$3");
 	}
 
-	std::ostringstream x;
-	Session::writeIM(x, im, (im[0] == "PRIVMSG" || im[0] == "NOTICE"));
-	tcp_.write(x.str());
+	if (tr_mod_c_) {
+		/* mirc colors -> onet */
+		size_t last = im.size() - 1;
+		boost::smatch match;
+		while (boost::regex_search(im[last], match, re_mod_ci_)) {
+			std::string col = "";
+			try {
+				col = colors_.right.at(boost::lexical_cast<unsigned int>(match[1]));
+			}
+			catch (...) { }
+			boost::replace_all(im[last], std::string(match[0]), "%C" + col + "%");
+		}
+	}
+
+	tcp_.write(Session::conv(charset_, "ISO8859-2", Session::build_im(im)));
+	for (size_t i = 0; i < afterwards.size(); i++)
+		tcp_.write(Session::conv(charset_, "ISO8859-2", afterwards[i]));
 }
 
-
-
-// ------------------ private ------------------ //
-
-
-
-void ChatOnet::handle_connect ()
+void ChatOnet::connect ()
 {
-	tcp_.write("AUTHKEY\r\n");
-	tcp_.timeout(360);
-	tcp_.readUntil("\n");
+	tcp_.timeout(10);
+	tcp_.vhost(session_.cnf_.get<std::string>("vhost"));
+	tcp_.connect("czat-app.onet.pl", 5015);
 }
 
 void ChatOnet::handle_read ()
 {
-	bool doSend = 1;
-	std::vector<std::string> im;
-	std::string buf;
-	if (tcp_.get(buf))
-		return;
-	std::istringstream is(buf);
-	Session::readIM(is, im);
+	bool do_send = true;
+	std::vector<std::string> im(Session::parse_im(Session::conv("ISO8859-2", charset_, tcp_.data())));
 
 	if (im.size() >= 3)
 		boost::to_upper(im[1]);
 
-	size_t n = im.size();
-	if (n && !(n >= 2 && im.size() >= 2 && (im[1] == "INVITE" || im[1] == "PART" || im[1] == "341"))) n--;
-	for (size_t i = 2; i < n; i++) if (im[i][0] == '^') im[i][0] = '+';
+	{
+		/* priv chans prefix */
+		size_t n = im.size();
+		if (n && !(n >= 2 && im.size() >= 2 && (im[1] == "INVITE" || im[1] == "PART" || im[1] == "341"))) n--;
+		for (size_t i = 2; i < n; i++) if (im[i][0] == '^') im[i][0] = '+';
+	}
 
 	if (im.size() >= 4 && im[1] == "801") {
-		sendInfo("-!- ");
-		sendInfo("-!-   ... authkey: " + im[3]);
-		std::string auth = authkey(im[3]);
-		sendInfo("-!-   ... recoded: " + auth);
-		sendInfo("-!- ");
+		notice("");
+		notice("AUTHKEY     = \"" + im[3] + "\"");
+		std::string auth(authkey(im[3]));
+		notice("transformed = \"" + auth + "\"");
+		notice("");
 
-		tcp_.write("NICK " + nick_ + "\r\n"
+		tcp_.write(Session::conv(charset_, "ISO8859-2",
+			"NICK " + session_.chat_nick_ + "\r\n"
 			+ "AUTHKEY " + auth + "\r\n"
-			+ "USER * " + uoKey_ + " czat-app.onet.pl :" + realname_
-			+ "\017 (\002chatproxy2\002)\r\n");
-		doSend = 0;
+			+ "USER * " + uokey_ + " czat-app.onet.pl :" + session_.chat_real_
+			+ Session::signature_app_ + "\r\n"));
+		do_send = false;
+	}
+	else if (im.size() >= 5 && im[1] == "433") {
+		/* nick already taken */
+		notice("");
+		notice("\0034AUTH error: \"\017" + im[4] + "\017\0034\".");
+		notice("");
+		session_.end();
+		return;
 	}
 	else if (im.size() >= 4 && im[1] == "005") {
 		for (size_t i = 3; i < im.size(); i++)
@@ -156,13 +217,18 @@ void ChatOnet::handle_read ()
 			}
 	}
 	else if (im.size() >= 4 && im[1] == "MODE" && (im[3] == "-W" || im[3] == "+W" || im[3] == "+b" || im[3] == "-b"))
-		doSend = 0;
+		do_send = false;
 	else if (im.size() >= 8 && im[1] == "817") {
 		std::vector<std::string> nim;
 		nim.push_back(":history");
 		nim.push_back("NOTICE");
 		nim.push_back(im[3]);
-		nim.push_back(epochToHuman(boost::lexical_cast<unsigned int>(im[4]), 1) + " <" + im[5] + "> " + im[7]);
+		try {
+			nim.push_back(Session::epoch_to_human(boost::lexical_cast<unsigned int>(im[4]), 1) + " <" + im[5] + "> " + im[7]);
+		}
+		catch (...) {
+			nim.push_back(im[4] + " <" + im[5] + "> " + im[7]);
+		}
 		im = nim;
 	}
 	else if (im.size() >= 4 && im[1] == "MODERNOTICE")
@@ -174,18 +240,39 @@ void ChatOnet::handle_read ()
 		im.erase(im.begin() + 2, im.begin() + 4);
 	}
 	else if (im.size() >= 2 && im[1] == "376") {
-		sendInfo("");
-		sendInfo("Onet module hints:");
-		sendInfo("");
-		sendInfo("  1) set /PRIV alias, to invite others to privs:");
-		sendInfo("           /alias PRIV QUOTE PRIV $-");
-		sendInfo("");
-		if (!adm())
-			tcp_.write("JOIN #chatproxy\r\n");
+		notice("");
+		notice("Useful <channel> maintenance commands:");
+		notice("");
+		notice("  /quote busy 1/0");
+		notice("  /quote ns info <nick>");
+		notice("  /quote ns set <property> <value>");
+		notice("  /quote cs info <channel>");
+		notice("  /quote rs info");
+		notice("  /quote cs homes");
+		notice("  /quote cs register <channel>");
+		notice("  /quote cs drop <channel>");
+		notice("  /quote cs transfer <channel> <nick>");
+		notice("  /quote cs op <channel> add/del <nick>");
+		notice("  /quote cs halfop <channel> add/del <nick>");
+		notice("  /quote cs voice <channel> add/del <nick>");
+		notice("  /quote cs ban <channel> add/del <nick>");
+		notice("  /quote cs banip <channel> add/del <nick>");
+		notice("  /quote cs set <channel> private on/off");
+		notice("  /quote cs set <channel> moderated on/off");
+		notice("  /quote cs set <channel> topic <topic>");
+		notice("");
+		notice("A good idea would be to set /PRIV alias -- to invite");
+		notice("others to privs. In Irssi, you can just type:");
+		notice("");
+		notice("  /alias PRIV QUOTE PRIV $-");
+		notice("  /priv <nick>");
+		notice("");
+
+		tcp_.write("JOIN " + channel_ + "\r\n");
 	}
 	else if (im.size() >= 2 && im[1] == "818") {
-		list_.clear();
-		doSend = 0;
+		chan_list_.clear();
+		do_send = 0;
 	}
 	else if (im.size() >= 4 && im[1] == "819") {
 		std::vector<std::string> x;
@@ -194,87 +281,159 @@ void ChatOnet::handle_read ()
 		for (size_t i = 0; i < x.size(); i += 3) {
 			tmp.name = x[i];
 			tmp.topic = x[i + 1];
-			tmp.num = boost::lexical_cast<size_t>(x[i + 2]);
-			list_.push_back(tmp);
+			try {
+				tmp.num = boost::lexical_cast<size_t>(x[i + 2]);
+			}
+			catch (...) {
+				tmp.num = 0;
+			}
+			chan_list_.push_back(tmp);
 		}
-		doSend = 0;
+		do_send = 0;
 	}
 	else if (im.size() >= 2 && im[1] == "820") {
-		std::sort(list_.begin(), list_.end());
-		for (size_t i = 0; i < list_.size(); i++)
-			sendRaw(":chatproxy2 322 " + nick_ + " " + list_[i].name + " "
-				+ boost::lexical_cast<std::string>(list_[i].num) + " :"
-				+ list_[i].topic + "\r\n");
-		sendRaw(":chatproxy2 323 " + nick_ + " :End of LIST\r\n");
-		doSend = 0;
+		std::sort(chan_list_.begin(), chan_list_.end());
+		for (size_t i = 0; i < chan_list_.size(); i++)
+			session_.tcp_.write(":chatproxy3 322 " + session_.chat_nick_ + " " + chan_list_[i].name + " "
+				+ boost::lexical_cast<std::string>(chan_list_[i].num) + " :"
+				+ chan_list_[i].topic + "\r\n");
+		session_.tcp_.write(":chatproxy3 323 " + session_.chat_nick_ + " :End of LIST\r\n");
+		do_send = 0;
 	}
-	else if (im.size() >= 4 && im[1] == "NOTICE" && im[0] == ":ChanServ!service@service.onet") {
-		boost::regex reEpoch("[1-9][0-9]{7}[0-9]+");
+	else if (im.size() >= 4 && im[1] == "NOTICE" && im[0].length() >= 13 && im[0].substr(im[0].length() - 13) == "@service.onet") {
+		boost::regex re_epoch("[1-9][0-9]{7}[0-9]+");
 		boost::smatch match;
-		while (boost::regex_search(im[im.size() - 1], match, reEpoch))
-			boost::replace_all(im[im.size() - 1], std::string(match[0]), "\"" + epochToHuman(boost::lexical_cast<unsigned int>(match[0])) + "\"");
+		while (boost::regex_search(im[im.size() - 1], match, re_epoch)) {
+			try {
+				boost::replace_all(im[im.size() - 1], std::string(match[0]), "\"" + Session::epoch_to_human(boost::lexical_cast<unsigned int>(match[0])) + "\"");
+			}
+			catch (...) {
+				break;
+			}
+		}
 	}
+	else if (im.size() >= 4 && im[1] == "INVITE" && im[3] == channel_)
+		tcp_.write("JOIN " + channel_ + "\r\n");
 
-	if (doSend) {
+	if (do_send) {
+		/* colors, font, images */
 		size_t last = im.size() - 1;
-		im[last] = boost::regex_replace(im[last], reModC_, "");
-		im[last] = boost::regex_replace(im[last], reModF_, "");
-		im[last] = boost::regex_replace(im[last], reModI_, "<$1>");
+		if (rm_mod_c_)
+			im[last] = boost::regex_replace(im[last], re_mod_c_, "");
+		else if (tr_mod_c_) {
+			boost::smatch match;
+			while (boost::regex_search(im[last], match, re_mod_c_)) {
+				unsigned int col = 0;
+				std::string cid(match[1]);
+				boost::to_lower(cid);
+				try {
+					col = colors_.left.at(cid);
+				}
+				catch (...) { }
+				boost::replace_all(im[im.size() - 1], std::string(match[0]), std::string("\003") + (col ? boost::lexical_cast<std::string>(col) : ""));
+			}
+		}
+		if (rm_mod_f_)
+			im[last] = boost::regex_replace(im[last], re_mod_f_, "");
+		if (tr_mod_i_)
+			im[last] = boost::regex_replace(im[last], re_mod_i_, "<$1>");
 
-		size_t p = -1;
-		while ((p = im[last].find("%%", ++p)) != std::string::npos)
-			im[last].replace(p, 2, "%");
+		/* %% */
+		if (!rm_mod_f_ || !tr_mod_i_ || (!rm_mod_c_ && !tr_mod_c_)) {
+			size_t p = std::string::npos;
+			while ((p = im[last].find("%%", ++p)) != std::string::npos)
+				im[last].replace(p, 2, "%");
+		}
 
-		send(im, (im[1] == "PRIVMSG" || im[1] == "NOTICE"));
+		/* display */
+		session_.tcp_.write(Session::build_im(im));
 	}
 
-	tcp_.readUntil("\n");
+	tcp_.read_until("\n");
 }
 
-void ChatOnet::handle_end ()
+void ChatOnet::handle_end (const std::string& reason)
 {
-	end();
+	ending_ = true;
+	session_.end("ChatOnet: " + reason);
 }
 
-int ChatOnet::getUoKey ()
+void ChatOnet::handle_connect ()
 {
-	Http ht;
-	std::stringstream dat;
+	tcp_.write("AUTHKEY\r\n");
+	tcp_.timeout(360);
+	tcp_.read_until("\n");
+}
 
-	if (password_.empty()) {
-		dat << "api_function=getUoKey&params=a:3:{s:4:\"nick\";s:" << nick_.size() << ":\"" << nick_
-			<< "\";s:8:\"tempNick\";i:1;s:7:\"version\";s:3:\"ksz\";}";
-		if (ht.post("http://czat.onet.pl/include/ajaxapi.xml.php3", dat.str()))
-			return -2;
-	}
-	else {
-		if (ht.get("http://czat.onet.pl/_s/kropka/1?DV=Incognito"))
-			return -1;
-		if (ht.get("http://secure.onet.pl/index.html"))
-			return -3;
-		if (ht.post("https://secure.onet.pl/index.html", "r=&url=&login=" + Http::urlencode(nick_)
-				+ "&haslo=" + Http::urlencode(password_) + "&ok=Ok"))
-			return -4;
-		dat << "api_function=getUoKey&params=a:3:{s:4:\"nick\";s:" << nick_.size() << ":\"" << nick_
-			<< "\";s:8:\"tempNick\";i:0;s:7:\"version\";s:3:\"ksz\";}";
-		if (ht.post("http://czat.onet.pl/include/ajaxapi.xml.php3", dat.str()))
-			return -5;
+void ChatOnet::http_handler (int stage, bool error, boost::shared_ptr<std::string> data, boost::shared_ptr<ChatOnet> me)
+{
+	if (ending_)
+		return;
+
+	if (error) {
+		notice("");
+		notice("HTTP error: " + *data);
+		notice("");
+		session_.end();
+		return;
 	}
 
-	std::string r = ht.result();
-	boost::regex reUo("<uoKey>([^<]+)");
-	boost::regex reZuo("<zuoUsername>([^<]+)");
-	boost::smatch match;
-
-	if (!boost::regex_search(r, match, reUo))
-		return -6;
-	uoKey_ = match[1];
-
-	if (!boost::regex_search(r, match, reZuo))
-		return -7;
-	nick_ = match[1];
-
-	return 0;
+	if (stage == 0) {
+		notice("  kropka/1...");
+		if (session_.chat_password_.empty()) {
+			std::string nick(Session::conv(charset_, "ISO8859-2", session_.chat_nick_));
+			http_.async_post("http://czat.onet.pl/include/ajaxapi.xml.php3",
+				"api_function=getUoKey&params=a:3:{s:4:\"nick\";s:"
+					+ boost::lexical_cast<std::string>(nick.length())
+					+ ":\"" + nick + "\";s:8:\"tempNick\";i:1;s:7:\"version\";s:3:\"ksz\";}",
+				boost::bind(&ChatOnet::http_handler, this, 3, _1, _2, me));
+		}
+		else {
+			http_.async_get("http://czat.onet.pl/client.html?ch=chatproxy3&e=0",
+				boost::bind(&ChatOnet::http_handler, this, 1, _1, _2, me));
+		}
+	}
+	else if (stage == 1) {
+		notice("  client.html...");
+		std::string nick(Session::conv(charset_, "ISO8859-2", session_.chat_nick_));
+		std::string pass(Session::conv(charset_, "ISO8859-2", session_.chat_password_));
+		http_.async_post("https://secure.onet.pl/mlogin.html",
+			"r=&url=&login=" + nick + "&haslo=" + pass + "&app_id=20&ssl=1&ok=1",
+			boost::bind(&ChatOnet::http_handler, this, 2, _1, _2, me));
+	}
+	else if (stage == 2) {
+		notice("  mlogin.html...");
+		std::string nick(Session::conv(charset_, "ISO8859-2", session_.chat_nick_));
+		http_.async_post("http://czat.onet.pl/include/ajaxapi.xml.php3",
+			"api_function=getUoKey&params=a:3:{s:4:\"nick\";s:"
+				+ boost::lexical_cast<std::string>(nick.length())
+				+ ":\"" + nick + "\";s:8:\"tempNick\";i:0;s:7:\"version\";s:3:\"ksz\";}",
+			boost::bind(&ChatOnet::http_handler, this, 3, _1, _2, me));
+	}
+	else if (stage == 3) {
+		notice("  ajaxapi.xml...");
+		boost::regex uo("<uoKey>([^<]+)"), err("err_text=\"([^\"]*)"), nick("<zuoUsername>([^<]+)");
+		boost::smatch m;
+		if (!boost::regex_search(*data, m, uo)) {
+			notice("");
+			if (boost::regex_search(*data, m, err))
+				notice("\0034AUTH error: \"\017" + Session::conv("ISO8859-2", charset_, m[1]) + "\017\0034\".");
+			else
+				notice("\0034AUTH error: \017\002?");
+			notice("");
+			session_.end();
+		}
+		else {
+			uokey_ = m[1];
+			notice("  uokey = \"" + uokey_ + "\"");
+			notice("");
+			if (boost::regex_search(*data, m, nick))
+				session_.chat_nick_ = Session::conv("ISO8859-2", charset_, m[1]);
+			notice("Connecting...");
+			notice("");
+			connect();
+		}
+	}
 }
 
 std::string ChatOnet::authkey (const std::string& key)

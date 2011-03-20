@@ -1,121 +1,93 @@
-#ifndef HTTP_H_e7e6279e639240569ef77fd2ede490e5
-#define HTTP_H_e7e6279e639240569ef77fd2ede490e5
+/**
+ * chatproxy3 v3.0
+ * Copyright (C) 2011  Michal Rus
+ * http://michalrus.com/code/chatproxy3/
+ *
+ * Http.h -- libcurl wrapper (asynchronization with asio::io_service)
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#ifndef HTTP_H_c3dca5908aed43f251ac818e4cf02817
+#	define HTTP_H_c3dca5908aed43f251ac818e4cf02817
 
 #include <boost/noncopyable.hpp>
-#include <curl/curl.h>
+#include <boost/asio/io_service.hpp>
+#include <boost/thread.hpp>
+#include <boost/function.hpp>
+#include <boost/shared_ptr.hpp>
 #include <string>
+#include <queue>
+#include <map>
 
-class Http : public boost::noncopyable {
-	public:
-		Http ()
-			: curl_(curl_easy_init())
-		{
-			memset(curlErrBuf_, 0, sizeof(curlErrBuf_));
-			curl_easy_setopt(curl_, CURLOPT_ERRORBUFFER, curlErrBuf_);
-			curl_easy_setopt(curl_, CURLOPT_FAILONERROR, 1);
-			curl_easy_setopt(curl_, CURLOPT_FOLLOWLOCATION, 1);
-			curl_easy_setopt(curl_, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.9.1.3) Gecko/20090824 Firefox/3.5.3");
-			curl_easy_setopt(curl_, CURLOPT_COOKIEFILE, "");
-		}
+class Http : public boost::noncopyable
+{
+public:
+	typedef boost::function<void(bool, boost::shared_ptr<std::string>)> handler_t;
 
-		~Http () {
-			curl_easy_cleanup(curl_);
-		}
+	Http ();
+	~Http ();
 
-		std::string error  () const { return curlErrBuf_; }
-		std::string result () const { return buf_; }
+	/**
+	 * Starts loop() thread. You can add request to queue,
+	 * but nothing will happen if loop() is started.
+	 */
+	static void init (boost::asio::io_service& io_service, const std::string& vhost = "*");
 
-		int get (const std::string& url) {
-			curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
-			curl_easy_setopt(curl_, CURLOPT_HTTPGET, 1);
+	void async_get (const std::string& url, handler_t handler);
+	void async_post (const std::string& url, const std::string post_data, handler_t handler);
 
-			return perform();
-		}
+	static std::string urlencode (const std::string& c);
 
-		int post (const std::string& url, const std::string& data) {
-			curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
-			curl_easy_setopt(curl_, CURLOPT_POST, 1);
-			curl_easy_setopt(curl_, CURLOPT_POSTFIELDSIZE, data.size());
-			curl_easy_setopt(curl_, CURLOPT_POSTFIELDS, data.data());
+	inline static const std::string& vhost () { return vhost_; }
+	inline static boost::asio::io_service& io_service () { return *io_service_; }
 
-			return perform();
-		}
+private:
+	/**
+	 * Cookies (remembered per instance).
+	 */
+	boost::shared_ptr<std::map<std::string, std::string> > cookies_;
 
-		void file () {
-			file_.erase();
-		}
+	/**
+	 * Getter/poster loop. Run in a separate thread
+	 * to "asynchronize" libcurl.
+	 */
+	static void loop (boost::asio::io_service& io_service);
 
-		void file (const std::string& path) {
-			file_ = path;
-		}
+	static size_t write_func (char* data, size_t size, size_t nmemb, std::string* buf);
+	static size_t headr_func (char* data, size_t size, size_t nmemb, std::map<std::string, std::string>* cookies);
 
-		static std::string urlencode (const std::string& c) {
-			std::string r;
+	struct Request
+	{
+		Request() : get(true) {}
 
-			for (size_t i = 0; i < c.size(); i++)
-				if (('0' <= c[i] && c[i] <= '9')
-					|| ('A' <= c[i] && c[i] <= 'Z')
-					|| ('a' <= c[i] && c[i] <= 'z')
-					|| c[i] == '_' || c[i] == '-' || c[i] == '.')
-					r += c[i];
-				else {
-					char dig1 = (c[i] & 0xF0) >> 4;
-					char dig2 = (c[i] & 0x0F);
+		std::string url;
+		bool get;
+		std::string post_data;
+		handler_t handler;
+		boost::shared_ptr<std::map<std::string, std::string> > cookies;
+	};
 
-					if (0 <= dig1 && dig1 <= 9)
-						dig1 += 48;
-					if (10 <= dig1 && dig1 <= 15)
-						dig1 += 65 - 10;
-					if (0 <= dig2 && dig2 <= 9)
-						dig2 += 48;
-					if (10 <= dig2 && dig2 <= 15)
-						dig2 += 65 - 10;
+	static std::queue<Request> queue_;
+	static boost::mutex queue_mutex_;
+	static boost::condition_variable queue_cond_;
 
-					r += '%';
-					r += dig1;
-					r += dig2;
-				}
-
-			return r;
-		}
-
-	private:
-		int perform () {
-			FILE *fp = 0;
-			buf_.erase();
-
-			if (file_.empty()) {
-				curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, curlWriteFunc);
-				curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &buf_);
-			}
-			else {
-				fp = fopen(file_.c_str(), "w");
-				if (!fp) {
-					snprintf(curlErrBuf_, sizeof(curlErrBuf_), "Could not open %s", file_.c_str());
-					return -2;
-				}
-				curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, 0);
-				curl_easy_setopt(curl_, CURLOPT_WRITEDATA, fp);
-			}
-
-			int r = curl_easy_perform(curl_);
-
-			if (fp)
-				fclose(fp);
-
-			if (r)
-				return -1;
-			return 0;
-		}
-
-		static size_t curlWriteFunc (char* data, size_t size, size_t nmemb, std::string* buf) {
-			buf->append(data, size * nmemb);
-			return size * nmemb;
-		}
-
-		CURL *curl_;
-		char curlErrBuf_[CURL_ERROR_SIZE];
-		std::string file_, buf_;
+	static std::string vhost_;
+	static boost::asio::io_service* io_service_;
+	static bool inited_;
+	static void* curl_;
+	static char err_buf_[128];
 };
 
 #endif

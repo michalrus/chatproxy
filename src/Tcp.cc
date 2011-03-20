@@ -1,262 +1,263 @@
+/**
+ * chatproxy3 v3.0
+ * Copyright (C) 2011  Michal Rus
+ * http://michalrus.com/code/chatproxy3/
+ *
+ * Tcp.cc -- asynchronous TCP wrapper (shutdowns cleanly anytime).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include "Tcp.h"
 
-#include <istream>
-#include <boost/lexical_cast.hpp>
 #include <boost/bind.hpp>
-#include <boost/bind/protect.hpp>
-#include <boost/date_time/posix_time/posix_time_types.hpp>
+#include <boost/lexical_cast.hpp>
+
+#include "Debug.h"
 
 Tcp::Tcp (boost::asio::io_service& io_service,
-	boost::function<void()> funcRead, boost::function<void()> funcEnd, boost::function<void()> funcConnect, const std::string& debug)
-	: socket_(io_service), timer_(io_service), timeout_(0), io_service_(io_service), funcRead_(funcRead),
-	  funcEnd_(funcEnd), funcConnect_(funcConnect), connecting_(0), ending_(0), closed_(0), nev_(0),
-	  debug_(debug)
+	boost::function<void()> handle_read,
+	boost::function<void(const std::string&)> handle_end,
+	boost::function<void()> handle_connect)
+	: impl_(new impl(io_service, handle_read, handle_end, handle_connect))
+{
+}
+
+Tcp::impl::impl (boost::asio::io_service& io_service,
+	boost::function<void()> handle_read,
+	boost::function<void(const std::string&)> handle_end,
+	boost::function<void()> handle_connect)
+	: socket_(io_service), io_service_(io_service), timer_(io_service), timeout_(0),
+	  handle_read_(handle_read), handle_end_(handle_end), handle_connect_(handle_connect),
+	  vhost_(false), ending_(false), connecting_(false)
 {
 }
 
 Tcp::~Tcp ()
 {
-	close();
+	/* if "visible" object gets destroyed, we don't want
+	 * to call Tcp::handle_end_ -- it probably was destroyed
+	 * too -- furthermore, owner of Tcp *knows* that connection
+	 * will end in microseconds -- all in all he "called" ~Tcp. =)
+	 */
+	impl_->handle_end_ = boost::function<void(const std::string&)>();
 
-	// and wait for do_end to... end (nev_ == 0)
-
-	{
-		boost::unique_lock<boost::mutex> lock(nevMutexE_);
-		while (nev_)
-			nevCond_.wait(lock);
-	}
+	impl_->end("");
 }
 
-void Tcp::timeout (size_t tmout)
+Tcp::impl::~impl ()
 {
-	nevIncrm();
-	io_service_.post(boost::bind(&Tcp::nevWrap, this, boost::protect(boost::bind(&Tcp::do_timeout, this, tmout))));
+}
+
+void Tcp::timeout (unsigned int tmout)
+{
+	impl_->timeout(tmout, impl_);
+}
+
+void Tcp::impl::timeout (unsigned int tmout, boost::shared_ptr<Tcp::impl> me)
+{
+	if (ending_)
+		return;
+
+	timeout_ = tmout;
+	if (!timeout_) {
+		timer_.cancel();
+		return;
+	}
+	timer_.expires_from_now(boost::posix_time::seconds(timeout_));
+	timer_.async_wait(boost::bind(&Tcp::impl::handle_timeout, this, boost::asio::placeholders::error, me));
+}
+
+void Tcp::vhost (const std::string& addr)
+{
+	impl_->vhost(addr);
+}
+
+void Tcp::impl::vhost (const std::string& addr)
+{
+	if (vhost_ || connecting_ || ending_ || addr == "*")
+		return;
+	vhost_ = true;
+
+	try {
+		boost::asio::ip::tcp::endpoint endpoint;
+		endpoint.address(boost::asio::ip::address_v4::from_string(addr));
+
+		socket_.open(boost::asio::ip::tcp::v4());
+		socket_.bind(endpoint);
+	}
+	catch (...) {
+		die("vhost: cannot assign specified address");
+	}
 }
 
 void Tcp::connect (const std::string& host, unsigned short port)
 {
-	if (connecting_)
+	impl_->connect(host, port, impl_);
+}
+
+void Tcp::impl::connect (const std::string& host, unsigned short port, boost::shared_ptr<Tcp::impl> me)
+{
+	if (connecting_ || ending_)
 		return;
-	connecting_ = 1;
-	boost::unique_lock<boost::shared_mutex> lock(socketMutex_);
+
+	connecting_ = true;
+
 	boost::asio::ip::tcp::resolver resolver(io_service_);
 	endpoint_iterator_ = resolver.resolve(boost::asio::ip::tcp::resolver::query(host,
 		boost::lexical_cast<std::string>(port)));
 
 	boost::asio::ip::tcp::endpoint endpoint = *endpoint_iterator_;
 	++endpoint_iterator_;
-	nevIncrm();
-	socket_.async_connect(endpoint, boost::bind(&Tcp::handle_connect, this,
-		boost::asio::placeholders::error));
+	socket_.async_connect(endpoint, boost::bind(&Tcp::impl::handle_connect, this,
+		boost::asio::placeholders::error, me));
 }
 
-void Tcp::close ()
+void Tcp::end (const std::string& reason)
 {
-	nevIncrm();
-	io_service_.post(boost::bind(&Tcp::nevWrap, this, boost::protect(boost::bind(&Tcp::do_close, this))));
+	impl_->end(reason);
 }
 
-void Tcp::readUntil (const std::string& delim)
+void Tcp::impl::end (const std::string& reason)
 {
-	nevIncrm();
-	io_service_.post(boost::bind(&Tcp::nevWrap, this, boost::protect(boost::bind(&Tcp::do_readUntil, this, delim, 1))));
+	if (ending_)
+		return;
+	ending_ = true;
+
+	if (socket_.is_open()) {
+		/* flush buffers... */
+		try {
+			socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_send);
+		}
+		catch (...) { /* bad file descriptor */ }
+
+		/* ... and close...*/
+		socket_.close();
+	}
+
+	/* ... and cancel timeout timer; */
+	timer_.cancel();
+
+	/* after above calls all "waiting" handlers will eventually
+	 * get called, destroying all "shared_from_this()" smart
+	 * pointers and thus calling Tcp::impl::~impl if ~Tcp was
+	 * called -- or calling impl::handle_end_ and waiting for ~Tcp.
+	 */
+
+	/* Post end handler in Tcp owner -- if connection was shutdown
+	 * explicitly, by Tcp::end(), handler should cause owner deletion
+	 * (or at least Tcp object deletion);
+	 * if implicitly (by Tcp::~Tcp()), then (bool )handle_end_ == false.
+	 */
+	if (handle_end_)
+		io_service_.post(boost::bind(handle_end_, reason));
+}
+
+void Tcp::read_until (const std::string& delim)
+{
+	impl_->read_until(delim, impl_);
+}
+
+void Tcp::impl::read_until (const std::string& delim, boost::shared_ptr<Tcp::impl> me)
+{
+	if (ending_)
+		return;
+
+	try {
+		boost::asio::async_read_until(socket_, buffer_, delim,
+			boost::bind(&Tcp::impl::handle_read, this,
+				boost::asio::placeholders::error,
+				boost::asio::placeholders::bytes_transferred,
+				me));
+	}
+	catch (...) {
+		end("read_until: bad file descriptor");
+	}
 }
 
 void Tcp::write (const std::string& data)
 {
-	boost::unique_lock<boost::shared_mutex> lock(queueWMutex_);
+	impl_->write(data, impl_);
+}
+
+void Tcp::impl::write (const std::string& data, boost::shared_ptr<Tcp::impl> me)
+{
+	if (ending_)
+		return;
+
 	boost::shared_ptr<std::string> tmp(new std::string(data));
-	queueW_.push(tmp);
-	nevIncrm();
-	io_service_.post(boost::bind(&Tcp::nevWrap, this, boost::protect(boost::bind(&Tcp::do_write, this))));
+
+	try {
+		boost::asio::async_write(socket_, boost::asio::buffer(*tmp), boost::bind(&Tcp::impl::handle_write,
+			this, tmp, boost::asio::placeholders::error, me));
+	}
+	catch (...) {
+		end("write: bad file descriptor");
+	}
 }
 
-int Tcp::get (std::string& buffer)
+std::string Tcp::data () const
 {
-	boost::unique_lock<boost::shared_mutex> lock(queueRMutex_);
-	if (queueR_.empty())
-		return -1;
-	buffer = *(queueR_.front());
-	queueR_.pop();
-	return 0;
+	return impl_->data_;
 }
 
-void Tcp::nevIncrm ()
-{
-	boost::unique_lock<boost::mutex> lock(nevMutex_);
-	nev_++;
-}
-
-void Tcp::nevDecrm ()
-{
-	boost::unique_lock<boost::mutex> lock(nevMutex_);
-	nev_--;
-
-	if (nev_ < 2)
-		nevCond_.notify_all();
-}
-
-void Tcp::nevWrap (boost::function<void()> func)
-{
-	func();
-	nevDecrm();
-}
-
-void Tcp::handle_timeout (const boost::system::error_code& error)
+void Tcp::impl::handle_timeout (const boost::system::error_code& error, boost::shared_ptr<Tcp::impl> me)
 {
 	if (error != boost::asio::error::operation_aborted)
-		close();
-	nevDecrm();
+		end("timeout");
 }
 
-void Tcp::handle_connect (const boost::system::error_code& error)
+void Tcp::impl::handle_read (const boost::system::error_code& error, size_t bytes_transferred, boost::shared_ptr<Tcp::impl> me)
 {
-	boost::unique_lock<boost::shared_mutex> lock(socketMutex_);
-	error_ = error;
+	if (error)
+		end("handle_read: " + error.message());
+	else if (!ending_) {
+		timeout(timeout_, me);
 
+		{
+			char data[bytes_transferred];
+			std::istream(&buffer_).read(data, bytes_transferred);
+			data_ = std::string(data, bytes_transferred);
+		}
+
+		if (handle_read_)
+			handle_read_();
+	}
+}
+
+void Tcp::impl::handle_write (boost::shared_ptr<std::string> tmp, const boost::system::error_code& error, boost::shared_ptr<Tcp::impl> me)
+{
+	if (error)
+		end("handle_write: " + error.message());
+}
+
+void Tcp::impl::handle_connect (const boost::system::error_code& error, boost::shared_ptr<Tcp::impl> me)
+{
 	if (!error) {
-		timeout(timeout_);
-		connecting_ = 0;
-		if (funcConnect_)
-			funcConnect_();
+		if (!ending_) {
+			timeout(timeout_, me);
+			if (handle_connect_)
+				handle_connect_();
+		}
 	}
 	else if (endpoint_iterator_ != boost::asio::ip::tcp::resolver::iterator()) {
 		socket_.close();
 		boost::asio::ip::tcp::endpoint endpoint = *endpoint_iterator_;
 		++endpoint_iterator_;
-		nevIncrm();
-		socket_.async_connect(endpoint, boost::bind(&Tcp::handle_connect, this,
-			boost::asio::placeholders::error));
+		socket_.async_connect(endpoint, boost::bind(&Tcp::impl::handle_connect, this,
+			boost::asio::placeholders::error, me));
 	}
-	else {
-		nevIncrm();
-		io_service_.post(boost::bind(&Tcp::nevWrap, this, boost::protect(boost::bind(&Tcp::do_end, this))));
-	}
-
-	nevDecrm();
-}
-
-void Tcp::handle_read (boost::shared_ptr<boost::unique_lock<boost::shared_mutex> > bufLock,
-	const boost::system::error_code& error, size_t bytes_transferred)
-{
-	error_ = error;
-
-	if (error) {
-		nevIncrm();
-		io_service_.post(boost::bind(&Tcp::nevWrap, this, boost::protect(boost::bind(&Tcp::do_end, this))));
-	}
-	else {
-		timeout(timeout_);
-		boost::unique_lock<boost::shared_mutex> lock(queueRMutex_);
-		char data[bytes_transferred];
-		std::istream(&buffer_).read(data, bytes_transferred);
-		boost::shared_ptr<std::string> tmp(new std::string(data, bytes_transferred));
-		queueR_.push(tmp);
-		if (funcRead_) {
-			nevIncrm();
-			io_service_.post(boost::bind(&Tcp::nevWrap, this, funcRead_));
-		}
-	}
-
-	nevDecrm();
-}
-
-void Tcp::handle_write (boost::shared_ptr<std::string> tmp, const boost::system::error_code& error)
-{
-	error_ = error;
-
-	if (error) {
-		nevIncrm();
-		io_service_.post(boost::bind(&Tcp::nevWrap, this, boost::protect(boost::bind(&Tcp::do_end, this))));
-	}
-//	else if (!queueW_.empty()) {
-//		nevIncrm();
-//		io_service_.post(boost::bind(&Tcp::nevWrap, this, boost::protect(boost::bind(&Tcp::do_write, this))));
-//	}
-
-	nevDecrm();
-}
-
-void Tcp::do_timeout (size_t tmout)
-{
-	timeout_ = tmout;
-	boost::unique_lock<boost::shared_mutex> lock(timerMutex_);
-	if (!timeout_) {
-		timer_.cancel();
-		return;
-	}
-	timer_.expires_from_now(boost::posix_time::seconds(timeout_));
-	nevIncrm();
-	timer_.async_wait(boost::bind(&Tcp::handle_timeout, this, boost::asio::placeholders::error));
-}
-
-void Tcp::do_close ()
-{
-	if (closed_)
-		return;
-	closed_ = 1;
-
-	boost::unique_lock<boost::shared_mutex> lock(socketMutex_);
-	if (socket_.is_open()) {
-		// make sure we'll get read err.
-		// funcRead_ = boost::function<void()>();
-		// do_readUntil("\n", 0);
-
-		socket_.cancel();
-		socket_.close();
-	}
-	else {
-		nevIncrm();
-		io_service_.post(boost::bind(&Tcp::nevWrap, this, boost::protect(boost::bind(&Tcp::do_end, this))));
-	}
-}
-
-void Tcp::do_readUntil (std::string delim, bool do_lock)
-{
-	if (do_lock)
-		boost::unique_lock<boost::shared_mutex> lock(socketMutex_);
-	boost::shared_ptr<boost::unique_lock<boost::shared_mutex> > bufLock(new boost::unique_lock<boost::shared_mutex>(bufferMutex_));
-	nevIncrm();
-	boost::asio::async_read_until(socket_, buffer_, delim, boost::bind(&Tcp::handle_read,
-		this, bufLock, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
-}
-
-void Tcp::do_write ()
-{
-	boost::unique_lock<boost::shared_mutex> lock(queueWMutex_);
-	boost::unique_lock<boost::shared_mutex> lock2(socketMutex_);
-	if (queueW_.empty())
-		return;
-	boost::shared_ptr<std::string> tmp = queueW_.front();
-	nevIncrm();
-	boost::asio::async_write(socket_, boost::asio::buffer(*tmp), boost::bind(&Tcp::handle_write,
-		this, tmp, boost::asio::placeholders::error));
-	queueW_.pop();
-}
-
-void Tcp::do_end ()
-{
-	closed_ = 1;
-	if (ending_)
-		return;
-	ending_ = 1;
-	timer_.cancel();
-
-	// wait for all operations to complete (nev_ == 1 - for do_end() itself),
-	// so that *this can be safely deleted in funcEnd_
-
-	{
-		boost::unique_lock<boost::mutex> lock(nevMutexE_);
-		while (nev_ > 1)
-			nevCond_.wait(lock);
-	}
-
-//	std::cout << debug_ << ".2" << std::endl;
-
-	boost::this_thread::sleep(boost::posix_time::milliseconds(100));
-
-//	std::cout << debug_ << ".3" << std::endl;
-
-	if (funcEnd_)
-		funcEnd_();
+	else
+		end("handle_connect: " + error.message() + " (check vhost)");
 }

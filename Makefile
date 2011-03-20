@@ -1,27 +1,39 @@
-BUILD=g++ -g -Wall -O2 -c -o
+C=g++ -g -Wall -O2 -c -o
 
 all:
-	obj/buildnum
-	${BUILD} obj/main.o src/main.cc
-	${BUILD} obj/AuthKey.o src/AuthKey.cc
-	${BUILD} obj/Config.o src/Config.cc
-	${BUILD} obj/Session.o src/Session.cc
-	${BUILD} obj/Tcp.o src/Tcp.cc
-	${BUILD} obj/Chat.o src/Chat.cc
-	${BUILD} obj/ChatOnet.o src/ChatOnet.cc
-	${BUILD} obj/ChatWP.o src/ChatWP.cc
-	g++ -Wall -O2 -o chatproxy2 \
-		obj/main.o \
-		obj/AuthKey.o \
-		obj/Config.o \
-		obj/Session.o \
-		obj/Tcp.o \
-		obj/Chat.o \
-		obj/ChatOnet.o \
-		obj/ChatWP.o \
-		-Wl,-Bstatic -lcurl -lcryptopp -lGeoIP \
-		-lboost_regex-mt -lboost_iostreams-mt -lboost_system-mt -lboost_filesystem-mt -lboost_thread-mt \
-		-Wl,-Bdynamic -lssl -lpthread -lrt
+	${C} object/Chat.o src/Chat.cc
+	${C} object/ChatOnet.o src/ChatOnet.cc
+	${C} object/ChatWP.o src/ChatWP.cc
+	${C} object/Config.o src/Config.cc
+	${C} object/Debug.o src/Debug.cc
+	${C} object/Http.o src/Http.cc
+	${C} object/main.o src/main.cc
+	${C} object/Session.o src/Session.cc
+	${C} object/Tcp.o src/Tcp.cc
 
-clean:
-	rm chatproxy2 obj/*.o
+	g++ -Wall -O2 -o chatproxy3/chatproxy3 \
+		object/Chat.o \
+		object/ChatOnet.o \
+		object/ChatWP.o \
+		object/Config.o \
+		object/Debug.o \
+		object/Http.o \
+		object/main.o \
+		object/Session.o \
+		object/Tcp.o \
+		-Wl,-Bstatic \
+			-lcurl \
+			-lssh2 \
+			-lboost_system \
+			-lboost_filesystem \
+			-lboost_regex \
+			-lboost_thread \
+			-lstdc++ \
+		-Wl,-Bdynamic \
+			-lldap \
+			-lgssapi_krb5 \
+			-lssl \
+			-lidn \
+			-lpthread \
+			-lrt
+	strip chatproxy3/chatproxy3

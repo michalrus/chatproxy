@@ -1,124 +1,94 @@
-#ifndef CONFIG_H_e7e6279e639240569ef77fd2ede490e5
-#define CONFIG_H_e7e6279e639240569ef77fd2ede490e5
+/**
+ * chatproxy3 v3.0
+ * Copyright (C) 2011  Michal Rus
+ * http://michalrus.com/code/chatproxy3/
+ *
+ * Config.h -- chatproxy.conf reading and access.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#ifndef CONFIG_H_c3dca5908aed43f251ac818e4cf02817
+#	define CONFIG_H_c3dca5908aed43f251ac818e4cf02817
 
 #include <boost/noncopyable.hpp>
-#include <boost/regex.hpp>
-#include <boost/thread/shared_mutex.hpp>
-#include <boost/tuple/tuple.hpp>
 #include <boost/filesystem/path.hpp>
-#include <boost/filesystem/fstream.hpp>
+#include <boost/lexical_cast.hpp>
+#include <boost/random/mersenne_twister.hpp>
+#include <string>
 #include <vector>
-#include <cryptopp/osrng.h>
+#include <map>
+
+#include "Debug.h"
 
 class Session;
 
-struct User : public boost::noncopyable {
-	std::string name;
-	std::string password;
-	size_t sessionNumMax;
-	size_t sessionNumIPMax;
-	bool adm;
-	bool locked;
-};
+/**
+ * $EXEC_DIR/chatproxy.conf parsing.
+ *
+ * The file contains "<string><whitespace><string>" lines.
+ */
 
-struct Access {
-	Access (bool allow, const std::string& mask)
-		: allow_(allow), mask_(mask)
+struct Config : public boost::noncopyable
+{
+public:
+	Config (const boost::filesystem::path& path);
+
+	/**
+	 * File reading procedure.
+	 *
+	 * Turns "<string><whitespace><string>" lines in path
+	 * into a std::map<std::string, std::string>.
+	 */
+	void read (const boost::filesystem::path& path);
+
+	/**
+	 * Returns config from map_ after casting lexically to T
+	 * and catches cast/map exceptions.
+	 *
+	 * This means no config check before use. Sorry. =)
+	 */
+	template<typename T>
+	T get (const std::string& key)
 	{
-		std::string tmp = mask_;
-		boost::regex x("([\\\\.\\[\\]|(){}<>\\^\\$\\-+])"), y("\\*"), z("\\?");
-		tmp = boost::regex_replace(tmp, x, "\\\\${1}");
-		tmp = boost::regex_replace(tmp, y, ".*");
-		tmp = boost::regex_replace(tmp, z, ".");
-		reg_ = boost::regex(tmp, boost::regex_constants::icase);
+		try {
+			std::map<std::string, std::string>::iterator i;
+			i = map_.find(key);
+			if (i == map_.end())
+				throw std::runtime_error("\"" + key + "\" index not found");
+			return boost::lexical_cast<T>(i->second);
+		}
+		catch (...) {
+			die ("config file error (while casting \"" + key + "\" directive)");
+
+			/* never happens */
+			return T();
+		}
 	}
 
-	bool match (const std::string& host) const
-	{
-		return boost::regex_match(host, reg_);
-	}
+	inline void set (const std::string& key, const std::string& value) { map_[key] = value; }
 
-	bool allow () const
-	{
-		return allow_;
-	}
+	/**
+	 * Vector of sessions. Needed to keep them alive after handle_accept()
+	 */
+	std::vector<boost::shared_ptr<Session> > sessions_;
 
-	const std::string& mask () const
-	{
-		return mask_;
-	}
-
-	bool operator< (const Access& rhs) const
-	{
-		if (match(rhs.mask_))
-			return 1;
-		if (allow_ == rhs.allow_)
-			return mask_ < rhs.mask_;
-		return allow_;
-	}
+	boost::mt19937 rng_;
+	boost::filesystem::path path_;
 
 private:
-	bool allow_;
-	std::string mask_;
-	boost::regex reg_;
-};
-
-class Config : public boost::noncopyable {
-	public:
-		Config (const boost::filesystem::path& path);
-		boost::shared_ptr<User> authenticate (const std::string& user, const std::string& password);
-		std::string upassword (const std::string& user);
-
-		boost::filesystem::ofstream& errorLog ();
-		size_t getThreads () const;
-		unsigned short getPort () const;
-
-		boost::tuple<boost::filesystem::path, std::string> genToken ();
-
-		const std::vector<boost::shared_ptr<User> >& getUsers () const { return users_; }
-		int userAdd (const std::string& name, const std::string& password);
-		int userDel (const std::string& name);
-		int userMod (const std::string& name, const std::string& password);
-		int userMod (const std::string& name, bool ip, size_t limit);
-		int userMod (const std::string& name, bool adm);
-		void usersCleanup ();
-		void usersSave ();
-
-		const std::vector<Access>& getAccess () const { return access_; }
-		void accessAdd (bool allow, const std::string& mask);
-		void accessDel (bool allow, const std::string& mask);
-		void accessSave ();
-
-		const std::vector<boost::shared_ptr<Session> >& getSessions() const { return sessions_; }
-		void sessionAdd (boost::shared_ptr<Session>& s);
-		void sessionsCleanup ();
-
-		boost::shared_mutex usersMutex_;
-		boost::shared_mutex accessMutex_;
-		boost::shared_mutex sessionsMutex_;
-
-	private:
-		void readConfig ();
-		void readUsers ();
-		void readAccess ();
-
-		CryptoPP::AutoSeededRandomPool rng_;
-
-		boost::filesystem::path fileConfig_;
-		boost::filesystem::path fileAccess_;
-		boost::filesystem::path fileUsers_;
-		boost::filesystem::path fileError_;
-		boost::filesystem::path dirToken_;
-		std::string locToken_;
-		boost::filesystem::ofstream osError_;
-
-		std::vector<boost::shared_ptr<User> > users_;
-		std::vector<Access> access_;
-		std::vector<boost::shared_ptr<Session> > sessions_;
-
-		size_t threads_;
-		unsigned short port_;
-		const boost::regex reCmt_;
+	std::map<std::string, std::string> map_;
 };
 
 #endif

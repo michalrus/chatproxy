@@ -1,70 +1,77 @@
-#ifndef SESSION_H_e7e6279e639240569ef77fd2ede490e5
-#define SESSION_H_e7e6279e639240569ef77fd2ede490e5
+/**
+ * chatproxy3 v3.0
+ * Copyright (C) 2011  Michal Rus
+ * http://michalrus.com/code/chatproxy3/
+ *
+ * Session.h -- represents a session between chatproxy3 and IRC client.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-#include <string>
-#include <vector>
+#ifndef SESSION_H_c3dca5908aed43f251ac818e4cf02817
+#	define SESSION_H_c3dca5908aed43f251ac818e4cf02817
+
 #include <boost/noncopyable.hpp>
 #include <boost/asio/io_service.hpp>
+#include <boost/filesystem/path.hpp>
+#include <string>
+#include <vector>
 
 #include "Tcp.h"
 
 class Config;
 class Chat;
-struct User;
 
-class Session : public boost::noncopyable {
-	public:
-		Session (Config& cnf, boost::asio::io_service& io_service);
-		~Session ();
+class Session : public boost::noncopyable
+{
+public:
+	Session (Config& cnf, boost::asio::io_service& io_service);
+	~Session ();
 
-		void start ();
-		void end (const std::string& reason = "");
+	void start ();
+	void end (const std::string& reason = "");
+	void notice (const std::string& msg);
+	void privmsg (const std::string& msg);
 
-		bool deletable () const { return deletable_; }
+	static void brot (std::string& s, int by);
+	static std::string conv (const std::string& from, const std::string& to, const std::string& data);
+	static std::vector<std::string> parse_im (const std::string& im);
+	static std::string build_im (const std::vector<std::string>& im);
+	static std::string epoch_to_human (unsigned int epoch, bool only_hms = 0);
+	boost::filesystem::path unique (const std::string extension);
 
-		static void readIM (std::istream& is, std::vector<std::string>& im);
-		static void writeIM (std::ostream& os, const std::vector<std::string>& im, bool lastText = 0);
+	static std::string signature_onl_;
+	static std::string signature_app_;
 
-		void send (const std::vector<std::string>& im, bool lastText = 0);
-		void sendInfo (const std::string& msg, const std::string& to = "*");
-		void sendAdm (const std::string& msg);
-		void sendRaw (const std::string& data);
+	Tcp tcp_;
+	boost::asio::io_service& io_service_;
+	std::string chat_nick_, chat_user_, chat_password_, chat_real_, chat_network_;
 
-		static std::string epochToHuman (unsigned int epoch, bool onlyHMS = 0);
+	Config& cnf_;
 
-		std::string mask () { return ident_ + "@" + remoteCC_ + ":" + remoteHost_; }
+private:
+	void handle_read ();
+	void handle_end (const std::string& reason);
 
-		boost::shared_ptr<User> user_;
-		friend class Chat;
+	void auth (std::vector<std::string>& im);
+	void adm (const std::string& cmd);
 
-	private:
-		void handle_read ();
-		void handle_end ();
+	boost::shared_ptr<Chat> chat_;
 
-		void ident_handle_connect ();
-		void ident_handle_end ();
-		void ident_handle_read ();
-
-		void auth (std::vector<std::string>& im);
-		void adm (const std::string& command);
-
-		boost::asio::io_service& io_service_;
-		Config& cnf_;
-		unsigned int startTime_;
-		bool deletable_;
-		std::string myHost_, myPort_, remoteHost_, remotePort_, remoteCC_, ident_, network_,
-			nick_, username_, password_, realname_, authUser_, authPass_;
-		bool authGotNick_, authGotUser_, authGotPass_;
-
-		boost::shared_ptr<Chat> chat_;
-
-		boost::mutex identMutex_;
-		boost::condition_variable identCond_;
-		bool identReady_;
-
-	public:
-		// needs to be destructed first, ~Tcp blocks until all events ended
-		Tcp tcp_, tcpIdent_;
+	std::string local_host_, local_port_, remote_host_, remote_port_;
+	std::string password_;
+	bool auth_ok_, password_ok_, nick_ok_, user_ok_;
 };
 
 #endif
