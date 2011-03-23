@@ -112,7 +112,10 @@ void ChatWP::process(std::vector<std::string>& im)
 	}
 	else if (im[0] == "QUIT")
 		if (im.size() > 1)
-			im[1] += Session::signature_app_;
+			if (im[1].empty())
+				im[1] = Session::signature_onl_;
+			else
+				im[1] += Session::signature_app_;
 		else
 			im.push_back(Session::signature_onl_);
 	else if (im[0] == "JOIN")
@@ -144,7 +147,10 @@ void ChatWP::process(std::vector<std::string>& im)
 			afterwards.push_back("WPJOIN " + channel_ + "\r\n");
 
 		if (im.size() > 2)
-			im[2] += Session::signature_app_;
+			if (im[2].empty())
+				im[2] = Session::signature_onl_;
+			else
+				im[2] += Session::signature_app_;
 		else
 			im.push_back(Session::signature_onl_);
 	}
@@ -183,7 +189,9 @@ void ChatWP::handle_read ()
 		notice("recoded = \"" + m + "\"");
 		notice("");
 		tcp_.write("USER " + tcp_.socket().local_endpoint().address().to_string()
-			+ " 8 " + m + " :" + session_.chat_real_ + Session::signature_app_ + "\r\n");
+			+ " 8 " + m + " :"
+			+ (session_.chat_real_.empty() ? Session::signature_onl_ : session_.chat_real_ + Session::signature_app_)
+			+ "\r\n");
 		do_send = false;
 	}
 	else if (im.size() >= 5 && im[1] == "433") {
@@ -206,7 +214,7 @@ void ChatWP::handle_read ()
 		notice("  /SQUERY WPServ PYTANIE <channel> <msg>");
 		notice("  /SQUERY WPServ KATASK 0");
 		notice("  /SQUERY WPServ KATASK <id>");
-		notice("  /SQUERY WPServ KICK <channel> <nick>");
+		notice("  /SQUERY WPServ KICK <channel> <nick>[ <reason>]");
 		notice("");
 		tcp_.write("WPJOIN " + channel_ + "\r\n");
 	}
@@ -685,7 +693,7 @@ std::string ChatWP::conv::hash (const std::string& s)
 	 * possible flaw: a person whose nick
 	 * starts with '#'.
 	 */
-	if (s[0] == '#' || boost::regex_match(s, boost::regex("^(operator_?|straznik|WK-(bot|bsj)[0-9]+)$")))
+	if (s[0] == '#' || s[0] == '&' || boost::regex_match(s, boost::regex("^(operator_?|straznik|WK-(bot|bsj)[0-9]+)$")))
 		return s;
 
 	std::string ac(s);

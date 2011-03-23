@@ -123,7 +123,10 @@ void ChatOnet::process(std::vector<std::string>& im)
 			+ im[3] + " :" + im[4] + "\r\n");
 	else if (im[0] == "QUIT") {
 		if (im.size() > 1)
-			im[1] += Session::signature_app_;
+			if (im[1].empty())
+				im[1] = Session::signature_onl_;
+			else
+				im[1] += Session::signature_app_;
 		else
 			im.push_back(Session::signature_onl_);
 	}
@@ -133,7 +136,10 @@ void ChatOnet::process(std::vector<std::string>& im)
 			afterwards.push_back("JOIN " + channel_ + "\r\n");
 
 		if (im.size() > 2)
-			im[2] += Session::signature_app_;
+			if (im[2].empty())
+				im[2] = Session::signature_onl_;
+			else
+				im[2] += Session::signature_app_;
 		else
 			im.push_back(Session::signature_onl_);
 	}
@@ -197,8 +203,9 @@ void ChatOnet::handle_read ()
 		tcp_.write(Session::conv(charset_, "ISO8859-2",
 			"NICK " + session_.chat_nick_ + "\r\n"
 			+ "AUTHKEY " + auth + "\r\n"
-			+ "USER * " + uokey_ + " czat-app.onet.pl :" + session_.chat_real_
-			+ Session::signature_app_ + "\r\n"));
+			+ "USER * " + uokey_ + " czat-app.onet.pl :"
+			+ (session_.chat_real_.empty() ? Session::signature_onl_ : session_.chat_real_ + Session::signature_app_)
+			+ "\r\n"));
 		do_send = false;
 	}
 	else if (im.size() >= 5 && im[1] == "433") {
